@@ -73,7 +73,7 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/
 /******/ 	var hotApplyOnUpdate = true;
 /******/ 	// eslint-disable-next-line no-unused-vars
-/******/ 	var hotCurrentHash = "fdfee4e533f18247d128";
+/******/ 	var hotCurrentHash = "38918ea1d6c8a4008417";
 /******/ 	var hotRequestTimeout = 10000;
 /******/ 	var hotCurrentModuleData = {};
 /******/ 	var hotCurrentChildModule;
@@ -166,6 +166,7 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 			_declinedDependencies: {},
 /******/ 			_selfAccepted: false,
 /******/ 			_selfDeclined: false,
+/******/ 			_selfInvalidated: false,
 /******/ 			_disposeHandlers: [],
 /******/ 			_main: hotCurrentChildModule !== moduleId,
 /******/
@@ -195,6 +196,29 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 			removeDisposeHandler: function(callback) {
 /******/ 				var idx = hot._disposeHandlers.indexOf(callback);
 /******/ 				if (idx >= 0) hot._disposeHandlers.splice(idx, 1);
+/******/ 			},
+/******/ 			invalidate: function() {
+/******/ 				this._selfInvalidated = true;
+/******/ 				switch (hotStatus) {
+/******/ 					case "idle":
+/******/ 						hotUpdate = {};
+/******/ 						hotUpdate[moduleId] = modules[moduleId];
+/******/ 						hotSetStatus("ready");
+/******/ 						break;
+/******/ 					case "ready":
+/******/ 						hotApplyInvalidatedModule(moduleId);
+/******/ 						break;
+/******/ 					case "prepare":
+/******/ 					case "check":
+/******/ 					case "dispose":
+/******/ 					case "apply":
+/******/ 						(hotQueuedInvalidatedModules =
+/******/ 							hotQueuedInvalidatedModules || []).push(moduleId);
+/******/ 						break;
+/******/ 					default:
+/******/ 						// ignore requests in error states
+/******/ 						break;
+/******/ 				}
 /******/ 			},
 /******/
 /******/ 			// Management API
@@ -237,7 +261,7 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 	var hotDeferred;
 /******/
 /******/ 	// The update info
-/******/ 	var hotUpdate, hotUpdateNewHash;
+/******/ 	var hotUpdate, hotUpdateNewHash, hotQueuedInvalidatedModules;
 /******/
 /******/ 	function toModuleId(id) {
 /******/ 		var isNumber = +id + "" === id;
@@ -252,7 +276,7 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 		hotSetStatus("check");
 /******/ 		return hotDownloadManifest(hotRequestTimeout).then(function(update) {
 /******/ 			if (!update) {
-/******/ 				hotSetStatus("idle");
+/******/ 				hotSetStatus(hotApplyInvalidatedModules() ? "ready" : "idle");
 /******/ 				return null;
 /******/ 			}
 /******/ 			hotRequestedFilesMap = {};
@@ -271,7 +295,6 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 			var chunkId = 0;
 /******/ 			// eslint-disable-next-line no-lone-blocks
 /******/ 			{
-/******/ 				/*globals chunkId */
 /******/ 				hotEnsureUpdateChunk(chunkId);
 /******/ 			}
 /******/ 			if (
@@ -346,6 +369,11 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 		if (hotStatus !== "ready")
 /******/ 			throw new Error("apply() is only allowed in ready status");
 /******/ 		options = options || {};
+/******/ 		return hotApplyInternal(options);
+/******/ 	}
+/******/
+/******/ 	function hotApplyInternal(options) {
+/******/ 		hotApplyInvalidatedModules();
 /******/
 /******/ 		var cb;
 /******/ 		var i;
@@ -357,7 +385,7 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 			var outdatedModules = [updateModuleId];
 /******/ 			var outdatedDependencies = {};
 /******/
-/******/ 			var queue = outdatedModules.slice().map(function(id) {
+/******/ 			var queue = outdatedModules.map(function(id) {
 /******/ 				return {
 /******/ 					chain: [id],
 /******/ 					id: id
@@ -368,7 +396,11 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 				var moduleId = queueItem.id;
 /******/ 				var chain = queueItem.chain;
 /******/ 				module = installedModules[moduleId];
-/******/ 				if (!module || module.hot._selfAccepted) continue;
+/******/ 				if (
+/******/ 					!module ||
+/******/ 					(module.hot._selfAccepted && !module.hot._selfInvalidated)
+/******/ 				)
+/******/ 					continue;
 /******/ 				if (module.hot._selfDeclined) {
 /******/ 					return {
 /******/ 						type: "self-declined",
@@ -534,12 +566,18 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 			moduleId = outdatedModules[i];
 /******/ 			if (
 /******/ 				installedModules[moduleId] &&
-/******/ 				installedModules[moduleId].hot._selfAccepted
-/******/ 			)
+/******/ 				installedModules[moduleId].hot._selfAccepted &&
+/******/ 				// removed self-accepted modules should not be required
+/******/ 				appliedUpdate[moduleId] !== warnUnexpectedRequire &&
+/******/ 				// when called invalidate self-accepting is not possible
+/******/ 				!installedModules[moduleId].hot._selfInvalidated
+/******/ 			) {
 /******/ 				outdatedSelfAcceptedModules.push({
 /******/ 					module: moduleId,
+/******/ 					parents: installedModules[moduleId].parents.slice(),
 /******/ 					errorHandler: installedModules[moduleId].hot._selfAccepted
 /******/ 				});
+/******/ 			}
 /******/ 		}
 /******/
 /******/ 		// Now in "dispose" phase
@@ -606,10 +644,14 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 			}
 /******/ 		}
 /******/
-/******/ 		// Not in "apply" phase
+/******/ 		// Now in "apply" phase
 /******/ 		hotSetStatus("apply");
 /******/
-/******/ 		hotCurrentHash = hotUpdateNewHash;
+/******/ 		if (hotUpdateNewHash !== undefined) {
+/******/ 			hotCurrentHash = hotUpdateNewHash;
+/******/ 			hotUpdateNewHash = undefined;
+/******/ 		}
+/******/ 		hotUpdate = undefined;
 /******/
 /******/ 		// insert new code
 /******/ 		for (moduleId in appliedUpdate) {
@@ -662,7 +704,8 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 		for (i = 0; i < outdatedSelfAcceptedModules.length; i++) {
 /******/ 			var item = outdatedSelfAcceptedModules[i];
 /******/ 			moduleId = item.module;
-/******/ 			hotCurrentParents = [moduleId];
+/******/ 			hotCurrentParents = item.parents;
+/******/ 			hotCurrentChildModule = moduleId;
 /******/ 			try {
 /******/ 				__webpack_require__(moduleId);
 /******/ 			} catch (err) {
@@ -704,10 +747,33 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/ 			return Promise.reject(error);
 /******/ 		}
 /******/
+/******/ 		if (hotQueuedInvalidatedModules) {
+/******/ 			return hotApplyInternal(options).then(function(list) {
+/******/ 				outdatedModules.forEach(function(moduleId) {
+/******/ 					if (list.indexOf(moduleId) < 0) list.push(moduleId);
+/******/ 				});
+/******/ 				return list;
+/******/ 			});
+/******/ 		}
+/******/
 /******/ 		hotSetStatus("idle");
 /******/ 		return new Promise(function(resolve) {
 /******/ 			resolve(outdatedModules);
 /******/ 		});
+/******/ 	}
+/******/
+/******/ 	function hotApplyInvalidatedModules() {
+/******/ 		if (hotQueuedInvalidatedModules) {
+/******/ 			if (!hotUpdate) hotUpdate = {};
+/******/ 			hotQueuedInvalidatedModules.forEach(hotApplyInvalidatedModule);
+/******/ 			hotQueuedInvalidatedModules = undefined;
+/******/ 			return true;
+/******/ 		}
+/******/ 	}
+/******/
+/******/ 	function hotApplyInvalidatedModule(moduleId) {
+/******/ 		if (!Object.prototype.hasOwnProperty.call(hotUpdate, moduleId))
+/******/ 			hotUpdate[moduleId] = modules[moduleId];
 /******/ 	}
 /******/
 /******/ 	// The module cache
@@ -798,7 +864,7 @@ return /******/ (function(modules) { // webpackBootstrap
 /******/
 /******/
 /******/ 	// Load entry module and return exports
-/******/ 	return hotCreateRequire(52)(__webpack_require__.s = 52);
+/******/ 	return hotCreateRequire(55)(__webpack_require__.s = 55);
 /******/ })
 /************************************************************************/
 /******/ ([
@@ -999,7 +1065,7 @@ process.umask = function() { return 0; };
 /* WEBPACK VAR INJECTION */(function(global) {/*!
  * The buffer module from node.js, for the browser.
  *
- * @author   Feross Aboukhadijeh <feross@feross.org> <http://feross.org>
+ * @author   Feross Aboukhadijeh <http://feross.org>
  * @license  MIT
  */
 /* eslint-disable no-proto */
@@ -2816,35 +2882,6 @@ module.exports = g;
 
 /***/ }),
 /* 3 */
-/***/ (function(module, exports) {
-
-if (typeof Object.create === 'function') {
-  // implementation from standard node.js 'util' module
-  module.exports = function inherits(ctor, superCtor) {
-    ctor.super_ = superCtor
-    ctor.prototype = Object.create(superCtor.prototype, {
-      constructor: {
-        value: ctor,
-        enumerable: false,
-        writable: true,
-        configurable: true
-      }
-    });
-  };
-} else {
-  // old school shim for old browsers
-  module.exports = function inherits(ctor, superCtor) {
-    ctor.super_ = superCtor
-    var TempCtor = function () {}
-    TempCtor.prototype = superCtor.prototype
-    ctor.prototype = new TempCtor()
-    ctor.prototype.constructor = ctor
-  }
-}
-
-
-/***/ }),
-/* 4 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -2893,8 +2930,8 @@ var objectKeys = Object.keys || function (obj) {
 module.exports = Duplex;
 
 /*<replacement>*/
-var util = __webpack_require__(5);
-util.inherits = __webpack_require__(3);
+var util = Object.create(__webpack_require__(5));
+util.inherits = __webpack_require__(4);
 /*</replacement>*/
 
 var Readable = __webpack_require__(16);
@@ -2979,6 +3016,39 @@ Duplex.prototype._destroy = function (err, cb) {
 
   pna.nextTick(cb, err);
 };
+
+/***/ }),
+/* 4 */
+/***/ (function(module, exports) {
+
+if (typeof Object.create === 'function') {
+  // implementation from standard node.js 'util' module
+  module.exports = function inherits(ctor, superCtor) {
+    if (superCtor) {
+      ctor.super_ = superCtor
+      ctor.prototype = Object.create(superCtor.prototype, {
+        constructor: {
+          value: ctor,
+          enumerable: false,
+          writable: true,
+          configurable: true
+        }
+      })
+    }
+  };
+} else {
+  // old school shim for old browsers
+  module.exports = function inherits(ctor, superCtor) {
+    if (superCtor) {
+      ctor.super_ = superCtor
+      var TempCtor = function () {}
+      TempCtor.prototype = superCtor.prototype
+      ctor.prototype = new TempCtor()
+      ctor.prototype.constructor = ctor
+    }
+  }
+}
+
 
 /***/ }),
 /* 5 */
@@ -3098,7 +3168,10 @@ function objectToString(o) {
 /* 6 */
 /***/ (function(module, exports, __webpack_require__) {
 
-/* WEBPACK VAR INJECTION */(function(process) {// Copyright Joyent, Inc. and other Node contributors.
+/* WEBPACK VAR INJECTION */(function(process) {// .dirname, .basename, and .extname methods are extracted from Node.js v8.11.1,
+// backported and transplited with Babel, with backwards-compat fixes
+
+// Copyright Joyent, Inc. and other Node contributors.
 //
 // Permission is hereby granted, free of charge, to any person obtaining a
 // copy of this software and associated documentation files (the
@@ -3148,14 +3221,6 @@ function normalizeArray(parts, allowAboveRoot) {
 
   return parts;
 }
-
-// Split a filename into [root, dir, basename, ext], unix version
-// 'root' is just a slash, or nothing.
-var splitPathRe =
-    /^(\/?|)([\s\S]*?)((?:\.{1,2}|[^\/]+?|)(\.[^.\/]*|))(?:[\/]*)$/;
-var splitPath = function(filename) {
-  return splitPathRe.exec(filename).slice(1);
-};
 
 // path.resolve([from ...], to)
 // posix version
@@ -3272,37 +3337,120 @@ exports.relative = function(from, to) {
 exports.sep = '/';
 exports.delimiter = ':';
 
-exports.dirname = function(path) {
-  var result = splitPath(path),
-      root = result[0],
-      dir = result[1];
-
-  if (!root && !dir) {
-    // No dirname whatsoever
-    return '.';
+exports.dirname = function (path) {
+  if (typeof path !== 'string') path = path + '';
+  if (path.length === 0) return '.';
+  var code = path.charCodeAt(0);
+  var hasRoot = code === 47 /*/*/;
+  var end = -1;
+  var matchedSlash = true;
+  for (var i = path.length - 1; i >= 1; --i) {
+    code = path.charCodeAt(i);
+    if (code === 47 /*/*/) {
+        if (!matchedSlash) {
+          end = i;
+          break;
+        }
+      } else {
+      // We saw the first non-path separator
+      matchedSlash = false;
+    }
   }
 
-  if (dir) {
-    // It has a dirname, strip trailing slash
-    dir = dir.substr(0, dir.length - 1);
+  if (end === -1) return hasRoot ? '/' : '.';
+  if (hasRoot && end === 1) {
+    // return '//';
+    // Backwards-compat fix:
+    return '/';
   }
-
-  return root + dir;
+  return path.slice(0, end);
 };
 
+function basename(path) {
+  if (typeof path !== 'string') path = path + '';
 
-exports.basename = function(path, ext) {
-  var f = splitPath(path)[2];
-  // TODO: make this comparison case-insensitive on windows?
+  var start = 0;
+  var end = -1;
+  var matchedSlash = true;
+  var i;
+
+  for (i = path.length - 1; i >= 0; --i) {
+    if (path.charCodeAt(i) === 47 /*/*/) {
+        // If we reached a path separator that was not part of a set of path
+        // separators at the end of the string, stop now
+        if (!matchedSlash) {
+          start = i + 1;
+          break;
+        }
+      } else if (end === -1) {
+      // We saw the first non-path separator, mark this as the end of our
+      // path component
+      matchedSlash = false;
+      end = i + 1;
+    }
+  }
+
+  if (end === -1) return '';
+  return path.slice(start, end);
+}
+
+// Uses a mixed approach for backwards-compatibility, as ext behavior changed
+// in new Node.js versions, so only basename() above is backported here
+exports.basename = function (path, ext) {
+  var f = basename(path);
   if (ext && f.substr(-1 * ext.length) === ext) {
     f = f.substr(0, f.length - ext.length);
   }
   return f;
 };
 
+exports.extname = function (path) {
+  if (typeof path !== 'string') path = path + '';
+  var startDot = -1;
+  var startPart = 0;
+  var end = -1;
+  var matchedSlash = true;
+  // Track the state of characters (if any) we see before our first dot and
+  // after any path separator we find
+  var preDotState = 0;
+  for (var i = path.length - 1; i >= 0; --i) {
+    var code = path.charCodeAt(i);
+    if (code === 47 /*/*/) {
+        // If we reached a path separator that was not part of a set of path
+        // separators at the end of the string, stop now
+        if (!matchedSlash) {
+          startPart = i + 1;
+          break;
+        }
+        continue;
+      }
+    if (end === -1) {
+      // We saw the first non-path separator, mark this as the end of our
+      // extension
+      matchedSlash = false;
+      end = i + 1;
+    }
+    if (code === 46 /*.*/) {
+        // If this is our first dot, mark it as the start of our extension
+        if (startDot === -1)
+          startDot = i;
+        else if (preDotState !== 1)
+          preDotState = 1;
+    } else if (startDot !== -1) {
+      // We saw a non-dot and non-path separator before our dot, so we should
+      // have a good chance at having a non-empty extension
+      preDotState = -1;
+    }
+  }
 
-exports.extname = function(path) {
-  return splitPath(path)[3];
+  if (startDot === -1 || end === -1 ||
+      // We saw a non-dot character immediately before the dot
+      preDotState === 0 ||
+      // The (right-most) trimmed path component is exactly '..'
+      preDotState === 1 && startDot === end - 1 && startDot === startPart + 1) {
+    return '';
+  }
+  return path.slice(startDot, end);
 };
 
 function filter (xs, f) {
@@ -3332,7 +3480,8 @@ var substr = 'ab'.substr(-1) === 'b'
 "use strict";
 /* WEBPACK VAR INJECTION */(function(process) {
 
-if (!process.version ||
+if (typeof process === 'undefined' ||
+    !process.version ||
     process.version.indexOf('v0.') === 0 ||
     process.version.indexOf('v1.') === 0 && process.version.indexOf('v1.8.') !== 0) {
   module.exports = { nextTick: nextTick };
@@ -3379,74 +3528,6 @@ function nextTick(fn, arg1, arg2, arg3) {
 
 /***/ }),
 /* 8 */
-/***/ (function(module, exports, __webpack_require__) {
-
-/* eslint-disable node/no-deprecated-api */
-var buffer = __webpack_require__(1)
-var Buffer = buffer.Buffer
-
-// alternative to using Object.keys for old browsers
-function copyProps (src, dst) {
-  for (var key in src) {
-    dst[key] = src[key]
-  }
-}
-if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) {
-  module.exports = buffer
-} else {
-  // Copy properties from require('buffer')
-  copyProps(buffer, exports)
-  exports.Buffer = SafeBuffer
-}
-
-function SafeBuffer (arg, encodingOrOffset, length) {
-  return Buffer(arg, encodingOrOffset, length)
-}
-
-// Copy static methods from Buffer
-copyProps(Buffer, SafeBuffer)
-
-SafeBuffer.from = function (arg, encodingOrOffset, length) {
-  if (typeof arg === 'number') {
-    throw new TypeError('Argument must not be a number')
-  }
-  return Buffer(arg, encodingOrOffset, length)
-}
-
-SafeBuffer.alloc = function (size, fill, encoding) {
-  if (typeof size !== 'number') {
-    throw new TypeError('Argument must be a number')
-  }
-  var buf = Buffer(size)
-  if (fill !== undefined) {
-    if (typeof encoding === 'string') {
-      buf.fill(fill, encoding)
-    } else {
-      buf.fill(fill)
-    }
-  } else {
-    buf.fill(0)
-  }
-  return buf
-}
-
-SafeBuffer.allocUnsafe = function (size) {
-  if (typeof size !== 'number') {
-    throw new TypeError('Argument must be a number')
-  }
-  return Buffer(size)
-}
-
-SafeBuffer.allocUnsafeSlow = function (size) {
-  if (typeof size !== 'number') {
-    throw new TypeError('Argument must be a number')
-  }
-  return buffer.SlowBuffer(size)
-}
-
-
-/***/ }),
-/* 9 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -3558,7 +3639,7 @@ exports.setTyped(TYPED_OK);
 
 
 /***/ }),
-/* 10 */
+/* 9 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -3630,6 +3711,12 @@ EventEmitter.prototype._maxListeners = undefined;
 // added to it. This is a useful default which helps finding memory leaks.
 var defaultMaxListeners = 10;
 
+function checkListener(listener) {
+  if (typeof listener !== 'function') {
+    throw new TypeError('The "listener" argument must be of type Function. Received type ' + typeof listener);
+  }
+}
+
 Object.defineProperty(EventEmitter, 'defaultMaxListeners', {
   enumerable: true,
   get: function() {
@@ -3664,14 +3751,14 @@ EventEmitter.prototype.setMaxListeners = function setMaxListeners(n) {
   return this;
 };
 
-function $getMaxListeners(that) {
+function _getMaxListeners(that) {
   if (that._maxListeners === undefined)
     return EventEmitter.defaultMaxListeners;
   return that._maxListeners;
 }
 
 EventEmitter.prototype.getMaxListeners = function getMaxListeners() {
-  return $getMaxListeners(this);
+  return _getMaxListeners(this);
 };
 
 EventEmitter.prototype.emit = function emit(type) {
@@ -3723,9 +3810,7 @@ function _addListener(target, type, listener, prepend) {
   var events;
   var existing;
 
-  if (typeof listener !== 'function') {
-    throw new TypeError('The "listener" argument must be of type Function. Received type ' + typeof listener);
-  }
+  checkListener(listener);
 
   events = target._events;
   if (events === undefined) {
@@ -3762,7 +3847,7 @@ function _addListener(target, type, listener, prepend) {
     }
 
     // Check for listener leak
-    m = $getMaxListeners(target);
+    m = _getMaxListeners(target);
     if (m > 0 && existing.length > m && !existing.warned) {
       existing.warned = true;
       // No error code for this since it is a Warning
@@ -3794,12 +3879,12 @@ EventEmitter.prototype.prependListener =
     };
 
 function onceWrapper() {
-  var args = [];
-  for (var i = 0; i < arguments.length; i++) args.push(arguments[i]);
   if (!this.fired) {
     this.target.removeListener(this.type, this.wrapFn);
     this.fired = true;
-    ReflectApply(this.listener, this.target, args);
+    if (arguments.length === 0)
+      return this.listener.call(this.target);
+    return this.listener.apply(this.target, arguments);
   }
 }
 
@@ -3812,18 +3897,14 @@ function _onceWrap(target, type, listener) {
 }
 
 EventEmitter.prototype.once = function once(type, listener) {
-  if (typeof listener !== 'function') {
-    throw new TypeError('The "listener" argument must be of type Function. Received type ' + typeof listener);
-  }
+  checkListener(listener);
   this.on(type, _onceWrap(this, type, listener));
   return this;
 };
 
 EventEmitter.prototype.prependOnceListener =
     function prependOnceListener(type, listener) {
-      if (typeof listener !== 'function') {
-        throw new TypeError('The "listener" argument must be of type Function. Received type ' + typeof listener);
-      }
+      checkListener(listener);
       this.prependListener(type, _onceWrap(this, type, listener));
       return this;
     };
@@ -3833,9 +3914,7 @@ EventEmitter.prototype.removeListener =
     function removeListener(type, listener) {
       var list, events, position, i, originalListener;
 
-      if (typeof listener !== 'function') {
-        throw new TypeError('The "listener" argument must be of type Function. Received type ' + typeof listener);
-      }
+      checkListener(listener);
 
       events = this._events;
       if (events === undefined)
@@ -4013,16 +4092,84 @@ function unwrapListeners(arr) {
 
 
 /***/ }),
-/* 11 */
+/* 10 */
 /***/ (function(module, exports, __webpack_require__) {
 
 exports = module.exports = __webpack_require__(16);
 exports.Stream = exports;
 exports.Readable = exports;
 exports.Writable = __webpack_require__(12);
-exports.Duplex = __webpack_require__(4);
+exports.Duplex = __webpack_require__(3);
 exports.Transform = __webpack_require__(19);
-exports.PassThrough = __webpack_require__(34);
+exports.PassThrough = __webpack_require__(35);
+
+
+/***/ }),
+/* 11 */
+/***/ (function(module, exports, __webpack_require__) {
+
+/* eslint-disable node/no-deprecated-api */
+var buffer = __webpack_require__(1)
+var Buffer = buffer.Buffer
+
+// alternative to using Object.keys for old browsers
+function copyProps (src, dst) {
+  for (var key in src) {
+    dst[key] = src[key]
+  }
+}
+if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) {
+  module.exports = buffer
+} else {
+  // Copy properties from require('buffer')
+  copyProps(buffer, exports)
+  exports.Buffer = SafeBuffer
+}
+
+function SafeBuffer (arg, encodingOrOffset, length) {
+  return Buffer(arg, encodingOrOffset, length)
+}
+
+// Copy static methods from Buffer
+copyProps(Buffer, SafeBuffer)
+
+SafeBuffer.from = function (arg, encodingOrOffset, length) {
+  if (typeof arg === 'number') {
+    throw new TypeError('Argument must not be a number')
+  }
+  return Buffer(arg, encodingOrOffset, length)
+}
+
+SafeBuffer.alloc = function (size, fill, encoding) {
+  if (typeof size !== 'number') {
+    throw new TypeError('Argument must be a number')
+  }
+  var buf = Buffer(size)
+  if (fill !== undefined) {
+    if (typeof encoding === 'string') {
+      buf.fill(fill, encoding)
+    } else {
+      buf.fill(fill)
+    }
+  } else {
+    buf.fill(0)
+  }
+  return buf
+}
+
+SafeBuffer.allocUnsafe = function (size) {
+  if (typeof size !== 'number') {
+    throw new TypeError('Argument must be a number')
+  }
+  return Buffer(size)
+}
+
+SafeBuffer.allocUnsafeSlow = function (size) {
+  if (typeof size !== 'number') {
+    throw new TypeError('Argument must be a number')
+  }
+  return buffer.SlowBuffer(size)
+}
 
 
 /***/ }),
@@ -4096,8 +4243,8 @@ var Duplex;
 Writable.WritableState = WritableState;
 
 /*<replacement>*/
-var util = __webpack_require__(5);
-util.inherits = __webpack_require__(3);
+var util = Object.create(__webpack_require__(5));
+util.inherits = __webpack_require__(4);
 /*</replacement>*/
 
 /*<replacement>*/
@@ -4112,7 +4259,7 @@ var Stream = __webpack_require__(17);
 
 /*<replacement>*/
 
-var Buffer = __webpack_require__(8).Buffer;
+var Buffer = __webpack_require__(11).Buffer;
 var OurUint8Array = global.Uint8Array || function () {};
 function _uint8ArrayToBuffer(chunk) {
   return Buffer.from(chunk);
@@ -4130,7 +4277,7 @@ util.inherits(Writable, Stream);
 function nop() {}
 
 function WritableState(options, stream) {
-  Duplex = Duplex || __webpack_require__(4);
+  Duplex = Duplex || __webpack_require__(3);
 
   options = options || {};
 
@@ -4280,7 +4427,7 @@ if (typeof Symbol === 'function' && Symbol.hasInstance && typeof Function.protot
 }
 
 function Writable(options) {
-  Duplex = Duplex || __webpack_require__(4);
+  Duplex = Duplex || __webpack_require__(3);
 
   // Writable ctor is applied to Duplexes, too.
   // `realHasInstance` is necessary because using plain `instanceof`
@@ -4749,7 +4896,7 @@ Writable.prototype._destroy = function (err, cb) {
 
 /*<replacement>*/
 
-var Buffer = __webpack_require__(8).Buffer;
+var Buffer = __webpack_require__(34).Buffer;
 /*</replacement>*/
 
 var isEncoding = Buffer.isEncoding || function (encoding) {
@@ -5059,15 +5206,15 @@ module.exports = Array.isArray || function (arr) {
 
 module.exports = Stream;
 
-var EE = __webpack_require__(10).EventEmitter;
-var inherits = __webpack_require__(3);
+var EE = __webpack_require__(9).EventEmitter;
+var inherits = __webpack_require__(4);
 
 inherits(Stream, EE);
-Stream.Readable = __webpack_require__(11);
-Stream.Writable = __webpack_require__(35);
-Stream.Duplex = __webpack_require__(36);
-Stream.Transform = __webpack_require__(37);
-Stream.PassThrough = __webpack_require__(38);
+Stream.Readable = __webpack_require__(10);
+Stream.Writable = __webpack_require__(36);
+Stream.Duplex = __webpack_require__(37);
+Stream.Transform = __webpack_require__(38);
+Stream.PassThrough = __webpack_require__(39);
 
 // Backwards-compat with node 0.4.x
 Stream.Stream = Stream;
@@ -5211,7 +5358,7 @@ var Duplex;
 Readable.ReadableState = ReadableState;
 
 /*<replacement>*/
-var EE = __webpack_require__(10).EventEmitter;
+var EE = __webpack_require__(9).EventEmitter;
 
 var EElistenerCount = function (emitter, type) {
   return emitter.listeners(type).length;
@@ -5224,7 +5371,7 @@ var Stream = __webpack_require__(17);
 
 /*<replacement>*/
 
-var Buffer = __webpack_require__(8).Buffer;
+var Buffer = __webpack_require__(11).Buffer;
 var OurUint8Array = global.Uint8Array || function () {};
 function _uint8ArrayToBuffer(chunk) {
   return Buffer.from(chunk);
@@ -5236,8 +5383,8 @@ function _isUint8Array(obj) {
 /*</replacement>*/
 
 /*<replacement>*/
-var util = __webpack_require__(5);
-util.inherits = __webpack_require__(3);
+var util = Object.create(__webpack_require__(5));
+util.inherits = __webpack_require__(4);
 /*</replacement>*/
 
 /*<replacement>*/
@@ -5271,7 +5418,7 @@ function prependListener(emitter, event, fn) {
 }
 
 function ReadableState(options, stream) {
-  Duplex = Duplex || __webpack_require__(4);
+  Duplex = Duplex || __webpack_require__(3);
 
   options = options || {};
 
@@ -5348,7 +5495,7 @@ function ReadableState(options, stream) {
 }
 
 function Readable(options) {
-  Duplex = Duplex || __webpack_require__(4);
+  Duplex = Duplex || __webpack_require__(3);
 
   if (!(this instanceof Readable)) return new Readable(options);
 
@@ -6195,7 +6342,7 @@ function indexOf(xs, x) {
 /* 17 */
 /***/ (function(module, exports, __webpack_require__) {
 
-module.exports = __webpack_require__(10).EventEmitter;
+module.exports = __webpack_require__(9).EventEmitter;
 
 
 /***/ }),
@@ -6350,11 +6497,11 @@ module.exports = {
 
 module.exports = Transform;
 
-var Duplex = __webpack_require__(4);
+var Duplex = __webpack_require__(3);
 
 /*<replacement>*/
-var util = __webpack_require__(5);
-util.inherits = __webpack_require__(3);
+var util = Object.create(__webpack_require__(5));
+util.inherits = __webpack_require__(4);
 /*</replacement>*/
 
 util.inherits(Transform, Duplex);
@@ -6505,6 +6652,8 @@ function done(stream, er, data) {
 "use strict";
 /* WEBPACK VAR INJECTION */(function(global) {
 
+var objectAssign = __webpack_require__(43);
+
 // compare and isBuffer taken from https://github.com/feross/buffer/blob/680e9e5e488f22aac27599a57dc844a6315928dd/index.js
 // original notice:
 
@@ -6546,6 +6695,8 @@ function isBuffer(b) {
 }
 
 // based on node assert, original notice:
+// NB: The URL to the CommonJS spec is kept just for tradition.
+//     node-assert has evolved a lot since then, both in API and behavior.
 
 // http://wiki.commonjs.org/wiki/Unit_Testing/1.0
 //
@@ -6985,6 +7136,18 @@ assert.doesNotThrow = function(block, /*optional*/error, /*optional*/message) {
 };
 
 assert.ifError = function(err) { if (err) throw err; };
+
+// Expose a strict only variant of assert
+function strict(value, message) {
+  if (!value) fail(value, true, message, '==', strict);
+}
+assert.strict = objectAssign(strict, assert, {
+  equal: assert.strictEqual,
+  deepEqual: assert.deepStrictEqual,
+  notEqual: assert.notStrictEqual,
+  notDeepEqual: assert.notDeepStrictEqual
+});
+assert.strict.strict = assert.strict;
 
 var objectKeys = Object.keys || function (obj) {
   var keys = [];
@@ -7535,7 +7698,7 @@ function isPrimitive(arg) {
 }
 exports.isPrimitive = isPrimitive;
 
-exports.isBuffer = __webpack_require__(42);
+exports.isBuffer = __webpack_require__(44);
 
 function objectToString(o) {
   return Object.prototype.toString.call(o);
@@ -7579,7 +7742,7 @@ exports.log = function() {
  *     prototype.
  * @param {function} superCtor Constructor function to inherit prototype from.
  */
-exports.inherits = __webpack_require__(3);
+exports.inherits = __webpack_require__(45);
 
 exports._extend = function(origin, add) {
   // Don't do anything if add isn't an object
@@ -7835,10 +7998,10 @@ module.exports = crc32;
 /***/ (function(module, exports, __webpack_require__) {
 
 /* WEBPACK VAR INJECTION */(function(Buffer) {var sax = __webpack_require__(27);
-var fs = __webpack_require__(39);
+var fs = __webpack_require__(40);
 var path = __webpack_require__(6);
-var zlib = __webpack_require__(40);
-var Pend = __webpack_require__(51);
+var zlib = __webpack_require__(41);
+var Pend = __webpack_require__(54);
 
 exports.readFile = defaultReadFile;
 exports.parseFile = parseFile;
@@ -8778,7 +8941,8 @@ function toByteArray (b64) {
     ? validLen - 4
     : validLen
 
-  for (var i = 0; i < len; i += 4) {
+  var i
+  for (i = 0; i < len; i += 4) {
     tmp =
       (revLookup[b64.charCodeAt(i)] << 18) |
       (revLookup[b64.charCodeAt(i + 1)] << 12) |
@@ -10550,7 +10714,7 @@ exports.write = function (buffer, value, offset, isLE, mLen, nBytes) {
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
-var Buffer = __webpack_require__(8).Buffer;
+var Buffer = __webpack_require__(11).Buffer;
 var util = __webpack_require__(30);
 
 function copyBuffer(src, target, offset) {
@@ -10973,6 +11137,77 @@ function config (name) {
 /* 34 */
 /***/ (function(module, exports, __webpack_require__) {
 
+/*! safe-buffer. MIT License. Feross Aboukhadijeh <https://feross.org/opensource> */
+/* eslint-disable node/no-deprecated-api */
+var buffer = __webpack_require__(1)
+var Buffer = buffer.Buffer
+
+// alternative to using Object.keys for old browsers
+function copyProps (src, dst) {
+  for (var key in src) {
+    dst[key] = src[key]
+  }
+}
+if (Buffer.from && Buffer.alloc && Buffer.allocUnsafe && Buffer.allocUnsafeSlow) {
+  module.exports = buffer
+} else {
+  // Copy properties from require('buffer')
+  copyProps(buffer, exports)
+  exports.Buffer = SafeBuffer
+}
+
+function SafeBuffer (arg, encodingOrOffset, length) {
+  return Buffer(arg, encodingOrOffset, length)
+}
+
+SafeBuffer.prototype = Object.create(Buffer.prototype)
+
+// Copy static methods from Buffer
+copyProps(Buffer, SafeBuffer)
+
+SafeBuffer.from = function (arg, encodingOrOffset, length) {
+  if (typeof arg === 'number') {
+    throw new TypeError('Argument must not be a number')
+  }
+  return Buffer(arg, encodingOrOffset, length)
+}
+
+SafeBuffer.alloc = function (size, fill, encoding) {
+  if (typeof size !== 'number') {
+    throw new TypeError('Argument must be a number')
+  }
+  var buf = Buffer(size)
+  if (fill !== undefined) {
+    if (typeof encoding === 'string') {
+      buf.fill(fill, encoding)
+    } else {
+      buf.fill(fill)
+    }
+  } else {
+    buf.fill(0)
+  }
+  return buf
+}
+
+SafeBuffer.allocUnsafe = function (size) {
+  if (typeof size !== 'number') {
+    throw new TypeError('Argument must be a number')
+  }
+  return Buffer(size)
+}
+
+SafeBuffer.allocUnsafeSlow = function (size) {
+  if (typeof size !== 'number') {
+    throw new TypeError('Argument must be a number')
+  }
+  return buffer.SlowBuffer(size)
+}
+
+
+/***/ }),
+/* 35 */
+/***/ (function(module, exports, __webpack_require__) {
+
 "use strict";
 // Copyright Joyent, Inc. and other Node contributors.
 //
@@ -11006,8 +11241,8 @@ module.exports = PassThrough;
 var Transform = __webpack_require__(19);
 
 /*<replacement>*/
-var util = __webpack_require__(5);
-util.inherits = __webpack_require__(3);
+var util = Object.create(__webpack_require__(5));
+util.inherits = __webpack_require__(4);
 /*</replacement>*/
 
 util.inherits(PassThrough, Transform);
@@ -11023,41 +11258,41 @@ PassThrough.prototype._transform = function (chunk, encoding, cb) {
 };
 
 /***/ }),
-/* 35 */
+/* 36 */
 /***/ (function(module, exports, __webpack_require__) {
 
 module.exports = __webpack_require__(12);
 
 
 /***/ }),
-/* 36 */
-/***/ (function(module, exports, __webpack_require__) {
-
-module.exports = __webpack_require__(4);
-
-
-/***/ }),
 /* 37 */
 /***/ (function(module, exports, __webpack_require__) {
 
-module.exports = __webpack_require__(11).Transform
+module.exports = __webpack_require__(3);
 
 
 /***/ }),
 /* 38 */
 /***/ (function(module, exports, __webpack_require__) {
 
-module.exports = __webpack_require__(11).PassThrough
+module.exports = __webpack_require__(10).Transform
 
 
 /***/ }),
 /* 39 */
+/***/ (function(module, exports, __webpack_require__) {
+
+module.exports = __webpack_require__(10).PassThrough
+
+
+/***/ }),
+/* 40 */
 /***/ (function(module, exports) {
 
 
 
 /***/ }),
-/* 40 */
+/* 41 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -11065,7 +11300,7 @@ module.exports = __webpack_require__(11).PassThrough
 
 var Buffer = __webpack_require__(1).Buffer;
 var Transform = __webpack_require__(15).Transform;
-var binding = __webpack_require__(41);
+var binding = __webpack_require__(42);
 var util = __webpack_require__(21);
 var assert = __webpack_require__(20).ok;
 var kMaxLength = __webpack_require__(1).kMaxLength;
@@ -11673,7 +11908,7 @@ util.inherits(Unzip, Zlib);
 /* WEBPACK VAR INJECTION */}.call(this, __webpack_require__(0)))
 
 /***/ }),
-/* 41 */
+/* 42 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -11682,10 +11917,10 @@ util.inherits(Unzip, Zlib);
 
 var assert = __webpack_require__(20);
 
-var Zstream = __webpack_require__(43);
-var zlib_deflate = __webpack_require__(44);
-var zlib_inflate = __webpack_require__(47);
-var constants = __webpack_require__(50);
+var Zstream = __webpack_require__(46);
+var zlib_deflate = __webpack_require__(47);
+var zlib_inflate = __webpack_require__(50);
+var constants = __webpack_require__(53);
 
 for (var key in constants) {
   exports[key] = constants[key];
@@ -12089,7 +12324,104 @@ exports.Zlib = Zlib;
 /* WEBPACK VAR INJECTION */}.call(this, __webpack_require__(1).Buffer, __webpack_require__(0)))
 
 /***/ }),
-/* 42 */
+/* 43 */
+/***/ (function(module, exports, __webpack_require__) {
+
+"use strict";
+/*
+object-assign
+(c) Sindre Sorhus
+@license MIT
+*/
+
+
+/* eslint-disable no-unused-vars */
+var getOwnPropertySymbols = Object.getOwnPropertySymbols;
+var hasOwnProperty = Object.prototype.hasOwnProperty;
+var propIsEnumerable = Object.prototype.propertyIsEnumerable;
+
+function toObject(val) {
+	if (val === null || val === undefined) {
+		throw new TypeError('Object.assign cannot be called with null or undefined');
+	}
+
+	return Object(val);
+}
+
+function shouldUseNative() {
+	try {
+		if (!Object.assign) {
+			return false;
+		}
+
+		// Detect buggy property enumeration order in older V8 versions.
+
+		// https://bugs.chromium.org/p/v8/issues/detail?id=4118
+		var test1 = new String('abc');  // eslint-disable-line no-new-wrappers
+		test1[5] = 'de';
+		if (Object.getOwnPropertyNames(test1)[0] === '5') {
+			return false;
+		}
+
+		// https://bugs.chromium.org/p/v8/issues/detail?id=3056
+		var test2 = {};
+		for (var i = 0; i < 10; i++) {
+			test2['_' + String.fromCharCode(i)] = i;
+		}
+		var order2 = Object.getOwnPropertyNames(test2).map(function (n) {
+			return test2[n];
+		});
+		if (order2.join('') !== '0123456789') {
+			return false;
+		}
+
+		// https://bugs.chromium.org/p/v8/issues/detail?id=3056
+		var test3 = {};
+		'abcdefghijklmnopqrst'.split('').forEach(function (letter) {
+			test3[letter] = letter;
+		});
+		if (Object.keys(Object.assign({}, test3)).join('') !==
+				'abcdefghijklmnopqrst') {
+			return false;
+		}
+
+		return true;
+	} catch (err) {
+		// We don't expect any of the above to throw, but better to be safe.
+		return false;
+	}
+}
+
+module.exports = shouldUseNative() ? Object.assign : function (target, source) {
+	var from;
+	var to = toObject(target);
+	var symbols;
+
+	for (var s = 1; s < arguments.length; s++) {
+		from = Object(arguments[s]);
+
+		for (var key in from) {
+			if (hasOwnProperty.call(from, key)) {
+				to[key] = from[key];
+			}
+		}
+
+		if (getOwnPropertySymbols) {
+			symbols = getOwnPropertySymbols(from);
+			for (var i = 0; i < symbols.length; i++) {
+				if (propIsEnumerable.call(from, symbols[i])) {
+					to[symbols[i]] = from[symbols[i]];
+				}
+			}
+		}
+	}
+
+	return to;
+};
+
+
+/***/ }),
+/* 44 */
 /***/ (function(module, exports) {
 
 module.exports = function isBuffer(arg) {
@@ -12100,7 +12432,36 @@ module.exports = function isBuffer(arg) {
 }
 
 /***/ }),
-/* 43 */
+/* 45 */
+/***/ (function(module, exports) {
+
+if (typeof Object.create === 'function') {
+  // implementation from standard node.js 'util' module
+  module.exports = function inherits(ctor, superCtor) {
+    ctor.super_ = superCtor
+    ctor.prototype = Object.create(superCtor.prototype, {
+      constructor: {
+        value: ctor,
+        enumerable: false,
+        writable: true,
+        configurable: true
+      }
+    });
+  };
+} else {
+  // old school shim for old browsers
+  module.exports = function inherits(ctor, superCtor) {
+    ctor.super_ = superCtor
+    var TempCtor = function () {}
+    TempCtor.prototype = superCtor.prototype
+    ctor.prototype = new TempCtor()
+    ctor.prototype.constructor = ctor
+  }
+}
+
+
+/***/ }),
+/* 46 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -12154,7 +12515,7 @@ module.exports = ZStream;
 
 
 /***/ }),
-/* 44 */
+/* 47 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -12179,11 +12540,11 @@ module.exports = ZStream;
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
 
-var utils   = __webpack_require__(9);
-var trees   = __webpack_require__(45);
+var utils   = __webpack_require__(8);
+var trees   = __webpack_require__(48);
 var adler32 = __webpack_require__(22);
 var crc32   = __webpack_require__(23);
-var msg     = __webpack_require__(46);
+var msg     = __webpack_require__(49);
 
 /* Public constants ==========================================================*/
 /* ===========================================================================*/
@@ -14035,7 +14396,7 @@ exports.deflateTune = deflateTune;
 
 
 /***/ }),
-/* 45 */
+/* 48 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -14062,7 +14423,7 @@ exports.deflateTune = deflateTune;
 
 /* eslint-disable space-unary-ops */
 
-var utils = __webpack_require__(9);
+var utils = __webpack_require__(8);
 
 /* Public constants ==========================================================*/
 /* ===========================================================================*/
@@ -15264,7 +15625,7 @@ exports._tr_align = _tr_align;
 
 
 /***/ }),
-/* 46 */
+/* 49 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -15303,7 +15664,7 @@ module.exports = {
 
 
 /***/ }),
-/* 47 */
+/* 50 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -15328,11 +15689,11 @@ module.exports = {
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
 
-var utils         = __webpack_require__(9);
+var utils         = __webpack_require__(8);
 var adler32       = __webpack_require__(22);
 var crc32         = __webpack_require__(23);
-var inflate_fast  = __webpack_require__(48);
-var inflate_table = __webpack_require__(49);
+var inflate_fast  = __webpack_require__(51);
+var inflate_table = __webpack_require__(52);
 
 var CODES = 0;
 var LENS = 1;
@@ -16866,7 +17227,7 @@ exports.inflateUndermine = inflateUndermine;
 
 
 /***/ }),
-/* 48 */
+/* 51 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -17218,7 +17579,7 @@ module.exports = function inflate_fast(strm, start) {
 
 
 /***/ }),
-/* 49 */
+/* 52 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -17243,7 +17604,7 @@ module.exports = function inflate_fast(strm, start) {
 //   misrepresented as being the original software.
 // 3. This notice may not be removed or altered from any source distribution.
 
-var utils = __webpack_require__(9);
+var utils = __webpack_require__(8);
 
 var MAXBITS = 15;
 var ENOUGH_LENS = 852;
@@ -17568,7 +17929,7 @@ module.exports = function inflate_table(type, lens, lens_index, codes, table, ta
 
 
 /***/ }),
-/* 50 */
+/* 53 */
 /***/ (function(module, exports, __webpack_require__) {
 
 "use strict";
@@ -17643,7 +18004,7 @@ module.exports = {
 
 
 /***/ }),
-/* 51 */
+/* 54 */
 /***/ (function(module, exports) {
 
 module.exports = Pend;
@@ -17704,10 +18065,11 @@ function pendGo(self, fn) {
 
 
 /***/ }),
-/* 52 */
+/* 55 */
 /***/ (function(module, __webpack_exports__, __webpack_require__) {
 
 "use strict";
+// ESM COMPAT FLAG
 __webpack_require__.r(__webpack_exports__);
 
 // EXTERNAL MODULE: ./node_modules/path-browserify/index.js
@@ -17715,31 +18077,35 @@ var path_browserify = __webpack_require__(6);
 var path_browserify_default = /*#__PURE__*/__webpack_require__.n(path_browserify);
 
 // CONCATENATED MODULE: ./src/ImageLayer.ts
-function _typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
+function _typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { _typeof = function _typeof(obj) { return typeof obj; }; } else { _typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return _typeof(obj); }
 
 function _classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
-
-function _possibleConstructorReturn(self, call) { if (call && (_typeof(call) === "object" || typeof call === "function")) { return call; } return _assertThisInitialized(self); }
-
-function _getPrototypeOf(o) { _getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return _getPrototypeOf(o); }
-
-function _assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
 
 function _inherits(subClass, superClass) { if (typeof superClass !== "function" && superClass !== null) { throw new TypeError("Super expression must either be null or a function"); } subClass.prototype = Object.create(superClass && superClass.prototype, { constructor: { value: subClass, writable: true, configurable: true } }); if (superClass) _setPrototypeOf(subClass, superClass); }
 
 function _setPrototypeOf(o, p) { _setPrototypeOf = Object.setPrototypeOf || function _setPrototypeOf(o, p) { o.__proto__ = p; return o; }; return _setPrototypeOf(o, p); }
 
-var ImageLayer =
-/*#__PURE__*/
-function (_PIXI$Container) {
+function _createSuper(Derived) { var hasNativeReflectConstruct = _isNativeReflectConstruct(); return function _createSuperInternal() { var Super = _getPrototypeOf(Derived), result; if (hasNativeReflectConstruct) { var NewTarget = _getPrototypeOf(this).constructor; result = Reflect.construct(Super, arguments, NewTarget); } else { result = Super.apply(this, arguments); } return _possibleConstructorReturn(this, result); }; }
+
+function _possibleConstructorReturn(self, call) { if (call && (_typeof(call) === "object" || typeof call === "function")) { return call; } return _assertThisInitialized(self); }
+
+function _assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
+
+function _isNativeReflectConstruct() { if (typeof Reflect === "undefined" || !Reflect.construct) return false; if (Reflect.construct.sham) return false; if (typeof Proxy === "function") return true; try { Date.prototype.toString.call(Reflect.construct(Date, [], function () {})); return true; } catch (e) { return false; } }
+
+function _getPrototypeOf(o) { _getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return _getPrototypeOf(o); }
+
+var ImageLayer = /*#__PURE__*/function (_PIXI$Container) {
   _inherits(ImageLayer, _PIXI$Container);
+
+  var _super = _createSuper(ImageLayer);
 
   function ImageLayer(layer, route) {
     var _this;
 
     _classCallCheck(this, ImageLayer);
 
-    _this = _possibleConstructorReturn(this, _getPrototypeOf(ImageLayer).call(this));
+    _this = _super.call(this);
     Object.assign(_assertThisInitialized(_this), layer);
     _this.alpha = layer.opacity;
 
@@ -17754,33 +18120,233 @@ function (_PIXI$Container) {
 }(PIXI.Container);
 
 
-// CONCATENATED MODULE: ./src/Tile.ts
-function Tile_typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { Tile_typeof = function _typeof(obj) { return typeof obj; }; } else { Tile_typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return Tile_typeof(obj); }
+// CONCATENATED MODULE: ./src/TileObject.ts
+function TileObject_typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { TileObject_typeof = function _typeof(obj) { return typeof obj; }; } else { TileObject_typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return TileObject_typeof(obj); }
 
-function Tile_classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
-
-function Tile_possibleConstructorReturn(self, call) { if (call && (Tile_typeof(call) === "object" || typeof call === "function")) { return call; } return Tile_assertThisInitialized(self); }
-
-function Tile_getPrototypeOf(o) { Tile_getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return Tile_getPrototypeOf(o); }
-
-function Tile_assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
+function TileObject_classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
 function _defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } }
 
 function _createClass(Constructor, protoProps, staticProps) { if (protoProps) _defineProperties(Constructor.prototype, protoProps); if (staticProps) _defineProperties(Constructor, staticProps); return Constructor; }
 
+function TileObject_inherits(subClass, superClass) { if (typeof superClass !== "function" && superClass !== null) { throw new TypeError("Super expression must either be null or a function"); } subClass.prototype = Object.create(superClass && superClass.prototype, { constructor: { value: subClass, writable: true, configurable: true } }); if (superClass) TileObject_setPrototypeOf(subClass, superClass); }
+
+function TileObject_setPrototypeOf(o, p) { TileObject_setPrototypeOf = Object.setPrototypeOf || function _setPrototypeOf(o, p) { o.__proto__ = p; return o; }; return TileObject_setPrototypeOf(o, p); }
+
+function TileObject_createSuper(Derived) { var hasNativeReflectConstruct = TileObject_isNativeReflectConstruct(); return function _createSuperInternal() { var Super = TileObject_getPrototypeOf(Derived), result; if (hasNativeReflectConstruct) { var NewTarget = TileObject_getPrototypeOf(this).constructor; result = Reflect.construct(Super, arguments, NewTarget); } else { result = Super.apply(this, arguments); } return TileObject_possibleConstructorReturn(this, result); }; }
+
+function TileObject_possibleConstructorReturn(self, call) { if (call && (TileObject_typeof(call) === "object" || typeof call === "function")) { return call; } return TileObject_assertThisInitialized(self); }
+
+function TileObject_assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
+
+function TileObject_isNativeReflectConstruct() { if (typeof Reflect === "undefined" || !Reflect.construct) return false; if (Reflect.construct.sham) return false; if (typeof Proxy === "function") return true; try { Date.prototype.toString.call(Reflect.construct(Date, [], function () {})); return true; } catch (e) { return false; } }
+
+function TileObject_getPrototypeOf(o) { TileObject_getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return TileObject_getPrototypeOf(o); }
+
+function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
+
+var TileObject = /*#__PURE__*/function (_PIXI$extras$Animated) {
+  TileObject_inherits(TileObject, _PIXI$extras$Animated);
+
+  var _super = TileObject_createSuper(TileObject);
+
+  _createClass(TileObject, null, [{
+    key: "getTextures",
+    value: function getTextures(object, tileSet) {
+      var textures = [];
+      textures.push(tileSet.textures[object.gid - tileSet.firstGid]);
+      return textures;
+    }
+  }]);
+
+  function TileObject(object, tileSet, name, visible) {
+    var _this;
+
+    TileObject_classCallCheck(this, TileObject);
+
+    _this = _super.call(this, TileObject.getTextures(object, tileSet));
+
+    _defineProperty(TileObject_assertThisInitialized(_this), "gid", 0);
+
+    _defineProperty(TileObject_assertThisInitialized(_this), "name", '');
+
+    _defineProperty(TileObject_assertThisInitialized(_this), "_x", 0);
+
+    _defineProperty(TileObject_assertThisInitialized(_this), "_y", 0);
+
+    _defineProperty(TileObject_assertThisInitialized(_this), "_width", 0);
+
+    _defineProperty(TileObject_assertThisInitialized(_this), "_height", 0);
+
+    _defineProperty(TileObject_assertThisInitialized(_this), "visible", void 0);
+
+    _defineProperty(TileObject_assertThisInitialized(_this), "object", void 0);
+
+    _defineProperty(TileObject_assertThisInitialized(_this), "tileSet", void 0);
+
+    _this.textures = TileObject.getTextures(object, tileSet);
+    _this.object = object;
+    _this.tileSet = tileSet;
+    _this.name = name;
+    _this.visible = visible;
+    Object.assign(TileObject_assertThisInitialized(_this), object);
+    return _this;
+  }
+
+  _createClass(TileObject, [{
+    key: "setVisibility",
+    value: function setVisibility(visible) {
+      this.visible = visible;
+    }
+  }, {
+    key: "setInteractive",
+    value: function setInteractive(interactive) {
+      this.interactive = interactive;
+      this.buttonMode = true;
+    }
+  }, {
+    key: "setOnCallback",
+    value: function setOnCallback(event, callback) {
+      this.on(event, callback);
+    }
+  }]);
+
+  return TileObject;
+}(PIXI.extras.AnimatedSprite);
+
+
+// CONCATENATED MODULE: ./src/ObjectLayer.ts
+function ObjectLayer_typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { ObjectLayer_typeof = function _typeof(obj) { return typeof obj; }; } else { ObjectLayer_typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return ObjectLayer_typeof(obj); }
+
+function ObjectLayer_classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
+
+function ObjectLayer_defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } }
+
+function ObjectLayer_createClass(Constructor, protoProps, staticProps) { if (protoProps) ObjectLayer_defineProperties(Constructor.prototype, protoProps); if (staticProps) ObjectLayer_defineProperties(Constructor, staticProps); return Constructor; }
+
+function ObjectLayer_inherits(subClass, superClass) { if (typeof superClass !== "function" && superClass !== null) { throw new TypeError("Super expression must either be null or a function"); } subClass.prototype = Object.create(superClass && superClass.prototype, { constructor: { value: subClass, writable: true, configurable: true } }); if (superClass) ObjectLayer_setPrototypeOf(subClass, superClass); }
+
+function ObjectLayer_setPrototypeOf(o, p) { ObjectLayer_setPrototypeOf = Object.setPrototypeOf || function _setPrototypeOf(o, p) { o.__proto__ = p; return o; }; return ObjectLayer_setPrototypeOf(o, p); }
+
+function ObjectLayer_createSuper(Derived) { var hasNativeReflectConstruct = ObjectLayer_isNativeReflectConstruct(); return function _createSuperInternal() { var Super = ObjectLayer_getPrototypeOf(Derived), result; if (hasNativeReflectConstruct) { var NewTarget = ObjectLayer_getPrototypeOf(this).constructor; result = Reflect.construct(Super, arguments, NewTarget); } else { result = Super.apply(this, arguments); } return ObjectLayer_possibleConstructorReturn(this, result); }; }
+
+function ObjectLayer_possibleConstructorReturn(self, call) { if (call && (ObjectLayer_typeof(call) === "object" || typeof call === "function")) { return call; } return ObjectLayer_assertThisInitialized(self); }
+
+function ObjectLayer_assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
+
+function ObjectLayer_isNativeReflectConstruct() { if (typeof Reflect === "undefined" || !Reflect.construct) return false; if (Reflect.construct.sham) return false; if (typeof Proxy === "function") return true; try { Date.prototype.toString.call(Reflect.construct(Date, [], function () {})); return true; } catch (e) { return false; } }
+
+function ObjectLayer_getPrototypeOf(o) { ObjectLayer_getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return ObjectLayer_getPrototypeOf(o); }
+
+function ObjectLayer_defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
+
+
+
+var ObjectLayer_ObjectLayer = /*#__PURE__*/function (_PIXI$Container) {
+  ObjectLayer_inherits(ObjectLayer, _PIXI$Container);
+
+  var _super = ObjectLayer_createSuper(ObjectLayer);
+
+  ObjectLayer_createClass(ObjectLayer, null, [{
+    key: "findTileSet",
+    value: function findTileSet(gid, tileSets) {
+      var tileset;
+
+      for (var i = tileSets.length - 1; i >= 0; i--) {
+        tileset = tileSets[i];
+
+        if (tileset.firstGid && tileset.firstGid <= gid) {
+          break;
+        }
+      }
+
+      return tileset;
+    }
+  }]);
+
+  function ObjectLayer(layer, tileSets) {
+    var _this;
+
+    ObjectLayer_classCallCheck(this, ObjectLayer);
+
+    _this = _super.call(this);
+
+    ObjectLayer_defineProperty(ObjectLayer_assertThisInitialized(_this), "layer", void 0);
+
+    ObjectLayer_defineProperty(ObjectLayer_assertThisInitialized(_this), "tileSets", void 0);
+
+    ObjectLayer_defineProperty(ObjectLayer_assertThisInitialized(_this), "objects", void 0);
+
+    _this.layer = layer;
+    _this.tileSets = tileSets;
+    _this.objects = [];
+    Object.assign(ObjectLayer_assertThisInitialized(_this), layer);
+
+    _this.create();
+
+    return _this;
+  }
+
+  ObjectLayer_createClass(ObjectLayer, [{
+    key: "create",
+    value: function create() {
+      var _this2 = this;
+
+      (this.layer.objects || []).forEach(function (obj) {
+        var tileset = ObjectLayer.findTileSet(obj.gid, _this2.tileSets);
+
+        if (tileset) {
+          // it renders a bit high for some reason
+          obj.y -= obj.height;
+          var newObj = new TileObject(obj, tileset, obj.name, obj.visible);
+          newObj._x = newObj.x;
+          newObj._y = newObj.y;
+          newObj._width = newObj.width;
+          newObj._height = newObj.height;
+
+          _this2.objects.push(newObj);
+
+          _this2.addChild(newObj);
+        }
+      });
+    }
+  }]);
+
+  return ObjectLayer;
+}(PIXI.Container);
+
+
+// CONCATENATED MODULE: ./src/Tile.ts
+function Tile_typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { Tile_typeof = function _typeof(obj) { return typeof obj; }; } else { Tile_typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return Tile_typeof(obj); }
+
+function Tile_classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
+
+function Tile_defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } }
+
+function Tile_createClass(Constructor, protoProps, staticProps) { if (protoProps) Tile_defineProperties(Constructor.prototype, protoProps); if (staticProps) Tile_defineProperties(Constructor, staticProps); return Constructor; }
+
 function Tile_inherits(subClass, superClass) { if (typeof superClass !== "function" && superClass !== null) { throw new TypeError("Super expression must either be null or a function"); } subClass.prototype = Object.create(superClass && superClass.prototype, { constructor: { value: subClass, writable: true, configurable: true } }); if (superClass) Tile_setPrototypeOf(subClass, superClass); }
 
 function Tile_setPrototypeOf(o, p) { Tile_setPrototypeOf = Object.setPrototypeOf || function _setPrototypeOf(o, p) { o.__proto__ = p; return o; }; return Tile_setPrototypeOf(o, p); }
 
-function _defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
+function Tile_createSuper(Derived) { var hasNativeReflectConstruct = Tile_isNativeReflectConstruct(); return function _createSuperInternal() { var Super = Tile_getPrototypeOf(Derived), result; if (hasNativeReflectConstruct) { var NewTarget = Tile_getPrototypeOf(this).constructor; result = Reflect.construct(Super, arguments, NewTarget); } else { result = Super.apply(this, arguments); } return Tile_possibleConstructorReturn(this, result); }; }
 
-var Tile =
-/*#__PURE__*/
-function (_PIXI$extras$Animated) {
+function Tile_possibleConstructorReturn(self, call) { if (call && (Tile_typeof(call) === "object" || typeof call === "function")) { return call; } return Tile_assertThisInitialized(self); }
+
+function Tile_assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
+
+function Tile_isNativeReflectConstruct() { if (typeof Reflect === "undefined" || !Reflect.construct) return false; if (Reflect.construct.sham) return false; if (typeof Proxy === "function") return true; try { Date.prototype.toString.call(Reflect.construct(Date, [], function () {})); return true; } catch (e) { return false; } }
+
+function Tile_getPrototypeOf(o) { Tile_getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return Tile_getPrototypeOf(o); }
+
+function Tile_defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
+
+var Tile = /*#__PURE__*/function (_PIXI$extras$Animated) {
   Tile_inherits(Tile, _PIXI$extras$Animated);
 
-  _createClass(Tile, null, [{
+  var _super = Tile_createSuper(Tile);
+
+  Tile_createClass(Tile, null, [{
     key: "getTextures",
     value: function getTextures(tile, tileSet) {
       var textures = [];
@@ -17802,25 +18368,25 @@ function (_PIXI$extras$Animated) {
 
     Tile_classCallCheck(this, Tile);
 
-    _this = Tile_possibleConstructorReturn(this, Tile_getPrototypeOf(Tile).call(this, Tile.getTextures(tile, tileSet)));
+    _this = _super.call(this, Tile.getTextures(tile, tileSet));
 
-    _defineProperty(Tile_assertThisInitialized(_this), "animations", []);
+    Tile_defineProperty(Tile_assertThisInitialized(_this), "animations", []);
 
-    _defineProperty(Tile_assertThisInitialized(_this), "gid", 0);
+    Tile_defineProperty(Tile_assertThisInitialized(_this), "gid", 0);
 
-    _defineProperty(Tile_assertThisInitialized(_this), "_x", 0);
+    Tile_defineProperty(Tile_assertThisInitialized(_this), "_x", 0);
 
-    _defineProperty(Tile_assertThisInitialized(_this), "_y", 0);
+    Tile_defineProperty(Tile_assertThisInitialized(_this), "_y", 0);
 
-    _defineProperty(Tile_assertThisInitialized(_this), "tile", void 0);
+    Tile_defineProperty(Tile_assertThisInitialized(_this), "tile", void 0);
 
-    _defineProperty(Tile_assertThisInitialized(_this), "tileSet", void 0);
+    Tile_defineProperty(Tile_assertThisInitialized(_this), "tileSet", void 0);
 
-    _defineProperty(Tile_assertThisInitialized(_this), "horizontalFlip", void 0);
+    Tile_defineProperty(Tile_assertThisInitialized(_this), "horizontalFlip", void 0);
 
-    _defineProperty(Tile_assertThisInitialized(_this), "verticalFlip", void 0);
+    Tile_defineProperty(Tile_assertThisInitialized(_this), "verticalFlip", void 0);
 
-    _defineProperty(Tile_assertThisInitialized(_this), "diagonalFlip", void 0);
+    Tile_defineProperty(Tile_assertThisInitialized(_this), "diagonalFlip", void 0);
 
     _this.textures = Tile.getTextures(tile, tileSet);
     _this.tile = tile;
@@ -17835,7 +18401,7 @@ function (_PIXI$extras$Animated) {
     return _this;
   }
 
-  _createClass(Tile, [{
+  Tile_createClass(Tile, [{
     key: "flip",
     value: function flip() {
       if (this.horizontalFlip) {
@@ -17873,15 +18439,9 @@ function (_PIXI$extras$Animated) {
 
 
 // CONCATENATED MODULE: ./src/TileLayer.ts
-function TileLayer_typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { TileLayer_typeof = function _typeof(obj) { return typeof obj; }; } else { TileLayer_typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return TileLayer_typeof(obj); }
+function TileLayer_typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { TileLayer_typeof = function _typeof(obj) { return typeof obj; }; } else { TileLayer_typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return TileLayer_typeof(obj); }
 
 function TileLayer_classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
-
-function TileLayer_possibleConstructorReturn(self, call) { if (call && (TileLayer_typeof(call) === "object" || typeof call === "function")) { return call; } return TileLayer_assertThisInitialized(self); }
-
-function TileLayer_getPrototypeOf(o) { TileLayer_getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return TileLayer_getPrototypeOf(o); }
-
-function TileLayer_assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
 
 function TileLayer_defineProperties(target, props) { for (var i = 0; i < props.length; i++) { var descriptor = props[i]; descriptor.enumerable = descriptor.enumerable || false; descriptor.configurable = true; if ("value" in descriptor) descriptor.writable = true; Object.defineProperty(target, descriptor.key, descriptor); } }
 
@@ -17891,14 +18451,24 @@ function TileLayer_inherits(subClass, superClass) { if (typeof superClass !== "f
 
 function TileLayer_setPrototypeOf(o, p) { TileLayer_setPrototypeOf = Object.setPrototypeOf || function _setPrototypeOf(o, p) { o.__proto__ = p; return o; }; return TileLayer_setPrototypeOf(o, p); }
 
+function TileLayer_createSuper(Derived) { var hasNativeReflectConstruct = TileLayer_isNativeReflectConstruct(); return function _createSuperInternal() { var Super = TileLayer_getPrototypeOf(Derived), result; if (hasNativeReflectConstruct) { var NewTarget = TileLayer_getPrototypeOf(this).constructor; result = Reflect.construct(Super, arguments, NewTarget); } else { result = Super.apply(this, arguments); } return TileLayer_possibleConstructorReturn(this, result); }; }
+
+function TileLayer_possibleConstructorReturn(self, call) { if (call && (TileLayer_typeof(call) === "object" || typeof call === "function")) { return call; } return TileLayer_assertThisInitialized(self); }
+
+function TileLayer_assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
+
+function TileLayer_isNativeReflectConstruct() { if (typeof Reflect === "undefined" || !Reflect.construct) return false; if (Reflect.construct.sham) return false; if (typeof Proxy === "function") return true; try { Date.prototype.toString.call(Reflect.construct(Date, [], function () {})); return true; } catch (e) { return false; } }
+
+function TileLayer_getPrototypeOf(o) { TileLayer_getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return TileLayer_getPrototypeOf(o); }
+
 function TileLayer_defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
 
 
 
-var TileLayer_TileLayer =
-/*#__PURE__*/
-function (_PIXI$Container) {
+var TileLayer_TileLayer = /*#__PURE__*/function (_PIXI$Container) {
   TileLayer_inherits(TileLayer, _PIXI$Container);
+
+  var _super = TileLayer_createSuper(TileLayer);
 
   TileLayer_createClass(TileLayer, null, [{
     key: "findTileSet",
@@ -17922,7 +18492,7 @@ function (_PIXI$Container) {
 
     TileLayer_classCallCheck(this, TileLayer);
 
-    _this = TileLayer_possibleConstructorReturn(this, TileLayer_getPrototypeOf(TileLayer).call(this));
+    _this = _super.call(this);
 
     TileLayer_defineProperty(TileLayer_assertThisInitialized(_this), "layer", void 0);
 
@@ -18024,7 +18594,7 @@ var TileSet = function TileSet(route, tileSet) {
 
 
 // CONCATENATED MODULE: ./src/TiledMap.ts
-function TiledMap_typeof(obj) { if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { TiledMap_typeof = function _typeof(obj) { return typeof obj; }; } else { TiledMap_typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return TiledMap_typeof(obj); }
+function TiledMap_typeof(obj) { "@babel/helpers - typeof"; if (typeof Symbol === "function" && typeof Symbol.iterator === "symbol") { TiledMap_typeof = function _typeof(obj) { return typeof obj; }; } else { TiledMap_typeof = function _typeof(obj) { return obj && typeof Symbol === "function" && obj.constructor === Symbol && obj !== Symbol.prototype ? "symbol" : typeof obj; }; } return TiledMap_typeof(obj); }
 
 function TiledMap_classCallCheck(instance, Constructor) { if (!(instance instanceof Constructor)) { throw new TypeError("Cannot call a class as a function"); } }
 
@@ -18032,15 +18602,19 @@ function TiledMap_defineProperties(target, props) { for (var i = 0; i < props.le
 
 function TiledMap_createClass(Constructor, protoProps, staticProps) { if (protoProps) TiledMap_defineProperties(Constructor.prototype, protoProps); if (staticProps) TiledMap_defineProperties(Constructor, staticProps); return Constructor; }
 
-function TiledMap_possibleConstructorReturn(self, call) { if (call && (TiledMap_typeof(call) === "object" || typeof call === "function")) { return call; } return TiledMap_assertThisInitialized(self); }
-
-function TiledMap_getPrototypeOf(o) { TiledMap_getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return TiledMap_getPrototypeOf(o); }
-
-function TiledMap_assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
-
 function TiledMap_inherits(subClass, superClass) { if (typeof superClass !== "function" && superClass !== null) { throw new TypeError("Super expression must either be null or a function"); } subClass.prototype = Object.create(superClass && superClass.prototype, { constructor: { value: subClass, writable: true, configurable: true } }); if (superClass) TiledMap_setPrototypeOf(subClass, superClass); }
 
 function TiledMap_setPrototypeOf(o, p) { TiledMap_setPrototypeOf = Object.setPrototypeOf || function _setPrototypeOf(o, p) { o.__proto__ = p; return o; }; return TiledMap_setPrototypeOf(o, p); }
+
+function TiledMap_createSuper(Derived) { var hasNativeReflectConstruct = TiledMap_isNativeReflectConstruct(); return function _createSuperInternal() { var Super = TiledMap_getPrototypeOf(Derived), result; if (hasNativeReflectConstruct) { var NewTarget = TiledMap_getPrototypeOf(this).constructor; result = Reflect.construct(Super, arguments, NewTarget); } else { result = Super.apply(this, arguments); } return TiledMap_possibleConstructorReturn(this, result); }; }
+
+function TiledMap_possibleConstructorReturn(self, call) { if (call && (TiledMap_typeof(call) === "object" || typeof call === "function")) { return call; } return TiledMap_assertThisInitialized(self); }
+
+function TiledMap_assertThisInitialized(self) { if (self === void 0) { throw new ReferenceError("this hasn't been initialised - super() hasn't been called"); } return self; }
+
+function TiledMap_isNativeReflectConstruct() { if (typeof Reflect === "undefined" || !Reflect.construct) return false; if (Reflect.construct.sham) return false; if (typeof Proxy === "function") return true; try { Date.prototype.toString.call(Reflect.construct(Date, [], function () {})); return true; } catch (e) { return false; } }
+
+function TiledMap_getPrototypeOf(o) { TiledMap_getPrototypeOf = Object.setPrototypeOf ? Object.getPrototypeOf : function _getPrototypeOf(o) { return o.__proto__ || Object.getPrototypeOf(o); }; return TiledMap_getPrototypeOf(o); }
 
 function TiledMap_defineProperty(obj, key, value) { if (key in obj) { Object.defineProperty(obj, key, { value: value, enumerable: true, configurable: true, writable: true }); } else { obj[key] = value; } return obj; }
 
@@ -18049,10 +18623,11 @@ function TiledMap_defineProperty(obj, key, value) { if (key in obj) { Object.def
 
 
 
-var TiledMap_TiledMap =
-/*#__PURE__*/
-function (_PIXI$Container) {
+
+var TiledMap_TiledMap = /*#__PURE__*/function (_PIXI$Container) {
   TiledMap_inherits(TiledMap, _PIXI$Container);
+
+  var _super = TiledMap_createSuper(TiledMap);
 
   // tslint:disable-next-line:variable-name
   // tslint:disable-next-line:variable-name
@@ -18061,7 +18636,7 @@ function (_PIXI$Container) {
 
     TiledMap_classCallCheck(this, TiledMap);
 
-    _this = TiledMap_possibleConstructorReturn(this, TiledMap_getPrototypeOf(TiledMap).call(this));
+    _this = _super.call(this);
 
     TiledMap_defineProperty(TiledMap_assertThisInitialized(_this), "resourceUrl", void 0);
 
@@ -18119,6 +18694,16 @@ function (_PIXI$Container) {
               _this2.layers[layerData.name] = imageLayer;
 
               _this2.addChild(imageLayer);
+
+              break;
+            }
+
+          case 'object':
+            {
+              var objectLayer = new ObjectLayer_ObjectLayer(layerData, _this2.tileSets);
+              _this2.layers[layerData.name] = objectLayer;
+
+              _this2.addChild(objectLayer);
 
               break;
             }

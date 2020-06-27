@@ -25,6 +25,37 @@ declare module "TileSet" {
         constructor(route: string, tileSet: ITileSetData);
     }
 }
+declare module "TileObject" {
+    import TileSet from "TileSet";
+    export default class TileObject extends PIXI.extras.AnimatedSprite {
+        private static getTextures;
+        gid: number;
+        name: string;
+        _x: number;
+        _y: number;
+        _width: number;
+        _height: number;
+        visible: boolean;
+        object: ITileObjectData;
+        tileSet: TileSet;
+        constructor(object: ITileObjectData, tileSet: TileSet, name: string, visible: boolean);
+        setVisibility(visible: boolean): void;
+        setInteractive(interactive: boolean): void;
+        setOnCallback(event: string, callback: () => void): void;
+    }
+}
+declare module "ObjectLayer" {
+    import TileObject from "TileObject";
+    import TileSet from "TileSet";
+    export default class ObjectLayer extends PIXI.Container {
+        private static findTileSet;
+        layer: ILayerData;
+        tileSets: TileSet[];
+        objects: TileObject[];
+        constructor(layer: ILayerData, tileSets: TileSet[]);
+        create(): void;
+    }
+}
 declare module "Tile" {
     import TileSet from "TileSet";
     export default class Tile extends PIXI.extras.AnimatedSprite {
@@ -110,6 +141,7 @@ interface ILayerData {
         trans?: boolean;
         width: number;
     };
+    objects?: ITileObjectData[];
     opacity: number;
     visible: boolean;
     properties: {};
@@ -156,6 +188,16 @@ interface ITileData {
     probability?: number;
     properties: {};
     terrain: [];
+}
+interface ITileObjectData {
+    gid: number;
+    id: number;
+    name: string;
+    rotation: number;
+    visible: boolean;
+    width: number;
+    height: number;
+    properties: {};
 }
 interface IAnimation {
     tileId: number;

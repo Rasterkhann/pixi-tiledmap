@@ -10,7 +10,7 @@
     "tiledmap",
     "tmx"
   ],
-  "author": "Hagen Sommerkorn",
+  "author": "Kyle Kemp <kyle@seiyria.com>",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/riebel/pixi-tiledmap.git"
@@ -20,6 +20,7 @@
   "types": "dist/pixi-tiledmap.d.ts",
   "scripts": {
     "start": "webpack-dev-server -d",
+    "prepublish": "npm run build",
     "build": "tsc --declaration && webpack -p && typedoc --out docs",
     "lint": "tslint --project ./tsconfig.json"
   },
