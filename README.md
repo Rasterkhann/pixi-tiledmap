@@ -11,13 +11,13 @@ tiles within as an instance of `PIXI.extras.AnimatedSprite`.
 ## Installation
 
 ```sh
-npm install pixi-tiledmap
+npm install @seiyria/pixi-tiledmap
 ```
 
 or
 
 ```sh
-yarn add pixi-tiledmap
+yarn add @seiyria/pixi-tiledmap
 ```
 
 or include `pixi-tiledmap.min.js` after pixi.js in your html file (See [`example/browser`](https://github.com/riebel/pixi-tiledmap/tree/master/example/browser) for an example).
@@ -224,9 +224,13 @@ Example TiledMap object
 }
 ```
 
+## Notice
+
+I've updated this version to add ObjectLayer support and it's fairly minimal. That's the only change.
+
 ## To do
 
 support isometric and hexagonal orientation
 
-[npm-url]: https://npmjs.org/package/pixi-tiledmap
+[npm-url]: https://npmjs.org/package/@seiyria/pixi-tiledmap
 [npm-image]: http://img.shields.io/npm/v/pixi-tiledmap.svg?style=flat

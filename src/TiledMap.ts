@@ -2,6 +2,7 @@
 
 import path from 'path';
 import ImageLayer from './ImageLayer';
+import ObjectLayer from './ObjectLayer';
 import TileLayer from './TileLayer';
 import TileSet from './TileSet';
 
@@ -58,6 +59,12 @@ export class TiledMap extends PIXI.Container {
           const imageLayer = new ImageLayer(layerData, route);
           this.layers[layerData.name] = imageLayer as TileLayer;
           this.addChild(imageLayer);
+          break;
+        }
+        case 'object': {
+          const objectLayer = new ObjectLayer(layerData, this.tileSets);
+          this.layers[layerData.name] = objectLayer as unknown as TileLayer;
+          this.addChild(objectLayer);
           break;
         }
       }

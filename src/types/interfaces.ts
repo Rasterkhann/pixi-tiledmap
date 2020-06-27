@@ -1,3 +1,4 @@
+
 interface ITMXData {
   version: string;
   orientation: string;
@@ -22,6 +23,7 @@ interface ILayerData {
     trans?: boolean;
     width: number;
   };
+  objects?: ITileObjectData[];
   opacity: number;
   visible: boolean;
   properties: {};
@@ -70,6 +72,17 @@ interface ITileData {
   probability?: number;
   properties: {};
   terrain: [];
+}
+
+interface ITileObjectData {
+  gid: number;
+  id: number;
+  name: string;
+  rotation: number;
+  visible: boolean;
+  width: number;
+  height: number;
+  properties: {};
 }
 
 interface IAnimation {
